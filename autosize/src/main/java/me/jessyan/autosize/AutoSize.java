@@ -19,26 +19,26 @@ import android.app.Activity;
 import android.app.Application;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.net.Uri;
 import android.util.DisplayMetrics;
+import android.util.SparseArray;
 import android.view.View;
 
 import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import me.jessyan.autosize.external.ExternalAdaptInfo;
 import me.jessyan.autosize.external.ExternalAdaptManager;
 import me.jessyan.autosize.internal.CancelAdapt;
 import me.jessyan.autosize.internal.CustomAdapt;
-import me.jessyan.autosize.utils.LogUtils;
+import me.jessyan.autosize.utils.AutoSizeLog;
 import me.jessyan.autosize.utils.Preconditions;
 
 /**
  * ================================================
  * AndroidAutoSize 用于屏幕适配的核心方法都在这里, 核心原理来自于 <a href="https://mp.weixin.qq.com/s/d9QCoBP6kV9VSWvVldVVwA">今日头条官方适配方案</a>
- * 此方案只要应用到 {@link Activity} 上, 这个 {@link Activity} 下的所有 {@link android.support.v4.app.Fragment}、{@link Dialog}、
+ * 此方案只要应用到 {@link Activity} 上, 这个 {@link Activity} 下的所有 Fragment、{@link Dialog}、
  * 自定义 {@link View} 都会达到适配的效果, 如果某个页面不想使用适配请让该 {@link Activity} 实现 {@link CancelAdapt}
  * <p>
  * 任何方案都不可能完美, 在成本和收益中做出取舍, 选择出最适合自己的方案即可, 在没有更好的方案出来之前, 只有继续忍耐它的不完美, 或者自己作出改变
@@ -50,10 +50,40 @@ import me.jessyan.autosize.utils.Preconditions;
  * ================================================
  */
 public final class AutoSize {
-    private static Map<String, DisplayMetricsInfo> mCache = new ConcurrentHashMap<>();
+    private static SparseArray<DisplayMetricsInfo> mCache = new SparseArray<>();
+    private static final int MODE_SHIFT = 30;
+    private static final int MODE_MASK  = 0x3 << MODE_SHIFT;
+    private static final int MODE_ON_WIDTH  = 1 << MODE_SHIFT;
+    private static final int MODE_DEVICE_SIZE  = 2 << MODE_SHIFT;
 
     private AutoSize() {
         throw new IllegalStateException("you can't instantiate me!");
+    }
+
+    /**
+     * 检查 AndroidAutoSize 是否已经初始化
+     *
+     * @return {@code false} 表示 AndroidAutoSize 还未初始化, {@code true} 表示 AndroidAutoSize 已经初始化
+     */
+    public static boolean checkInit() {
+        return AutoSizeConfig.getInstance().getInitDensity() != -1;
+    }
+
+    /**
+     * 由于 AndroidAutoSize 会通过 {@link InitProvider} 的实例化而自动完成初始化, 并且 {@link AutoSizeConfig#init(Application)}
+     * 只允许被调用一次, 否则会报错, 所以 {@link AutoSizeConfig#init(Application)} 的调用权限并没有设为 public, 不允许外部使用者调用
+     * 但由于某些 issues 反应, 可能会在某些特殊情况下出现 {@link InitProvider} 未能正常实例化的情况, 导致 AndroidAutoSize 未能完成初始化
+     * 所以提供此静态方法用于让外部使用者在异常情况下也可以初始化 AndroidAutoSize, 在 {@link Application#onCreate()} 中调用即可
+     *
+     * @param application {@link Application}
+     */
+    public static void checkAndInit(Application application) {
+        if (!checkInit()) {
+            AutoSizeConfig.getInstance()
+                    .setLog(true)
+                    .init(application)
+                    .setUseDeviceSize(false);
+        }
     }
 
     /**
@@ -70,10 +100,10 @@ public final class AutoSize {
     }
 
     /**
-     * 使用 {@link Activity} 或 {@link android.support.v4.app.Fragment} 的自定义参数进行适配
+     * 使用 {@link Activity} 或 Fragment 的自定义参数进行适配
      *
      * @param activity    {@link Activity}
-     * @param customAdapt {@link Activity} 或 {@link android.support.v4.app.Fragment} 需实现 {@link CustomAdapt}
+     * @param customAdapt {@link Activity} 或 Fragment 需实现 {@link CustomAdapt}
      */
     public static void autoConvertDensityOfCustomAdapt(Activity activity, CustomAdapt customAdapt) {
         Preconditions.checkNotNull(customAdapt, "customAdapt == null");
@@ -91,10 +121,10 @@ public final class AutoSize {
     }
 
     /**
-     * 使用外部三方库的 {@link Activity} 或 {@link android.support.v4.app.Fragment} 的自定义适配参数进行适配
+     * 使用外部三方库的 {@link Activity} 或 Fragment 的自定义适配参数进行适配
      *
      * @param activity          {@link Activity}
-     * @param externalAdaptInfo 三方库的 {@link Activity} 或 {@link android.support.v4.app.Fragment} 提供的适配参数, 需要配合 {@link ExternalAdaptManager#addExternalAdaptInfoOfActivity(Class, ExternalAdaptInfo)}
+     * @param externalAdaptInfo 三方库的 {@link Activity} 或 Fragment 提供的适配参数, 需要配合 {@link ExternalAdaptManager#addExternalAdaptInfoOfActivity(Class, ExternalAdaptInfo)}
      */
     public static void autoConvertDensityOfExternalAdaptInfo(Activity activity, ExternalAdaptInfo externalAdaptInfo) {
         Preconditions.checkNotNull(externalAdaptInfo, "externalAdaptInfo == null");
@@ -145,6 +175,7 @@ public final class AutoSize {
      */
     public static void autoConvertDensity(Activity activity, float sizeInDp, boolean isBaseOnWidth) {
         Preconditions.checkNotNull(activity, "activity == null");
+        Preconditions.checkMainThread();
 
         float subunitsDesignSize = isBaseOnWidth ? AutoSizeConfig.getInstance().getUnitsManager().getDesignWidth()
                 : AutoSizeConfig.getInstance().getUnitsManager().getDesignHeight();
@@ -152,10 +183,10 @@ public final class AutoSize {
 
         int screenSize = isBaseOnWidth ? AutoSizeConfig.getInstance().getScreenWidth()
                 : AutoSizeConfig.getInstance().getScreenHeight();
-        String key = sizeInDp + "|" + subunitsDesignSize + "|" + isBaseOnWidth + "|"
-                + AutoSizeConfig.getInstance().isUseDeviceSize() + "|"
-                + AutoSizeConfig.getInstance().getInitScaledDensity() + "|"
-                + screenSize;
+
+        int key = Math.round((sizeInDp + subunitsDesignSize + screenSize) * AutoSizeConfig.getInstance().getInitScaledDensity()) & ~MODE_MASK;
+        key = isBaseOnWidth ? (key | MODE_ON_WIDTH) : (key & ~MODE_ON_WIDTH);
+        key = AutoSizeConfig.getInstance().isUseDeviceSize() ? (key | MODE_DEVICE_SIZE) : (key & ~MODE_DEVICE_SIZE);
 
         DisplayMetricsInfo displayMetricsInfo = mCache.get(key);
 
@@ -163,6 +194,8 @@ public final class AutoSize {
         int targetDensityDpi = 0;
         float targetScaledDensity = 0;
         float targetXdpi = 0;
+        int targetScreenWidthDp;
+        int targetScreenHeightDp;
 
         if (displayMetricsInfo == null) {
             if (isBaseOnWidth) {
@@ -170,10 +203,17 @@ public final class AutoSize {
             } else {
                 targetDensity = AutoSizeConfig.getInstance().getScreenHeight() * 1.0f / sizeInDp;
             }
-            float scale = AutoSizeConfig.getInstance().isExcludeFontScale() ? 1 : AutoSizeConfig.getInstance().
-                    getInitScaledDensity() * 1.0f / AutoSizeConfig.getInstance().getInitDensity();
-            targetScaledDensity = targetDensity * scale;
+            if (AutoSizeConfig.getInstance().getPrivateFontScale() > 0) {
+                targetScaledDensity = targetDensity * AutoSizeConfig.getInstance().getPrivateFontScale();
+            } else {
+                float systemFontScale = AutoSizeConfig.getInstance().isExcludeFontScale() ? 1 : AutoSizeConfig.getInstance().
+                        getInitScaledDensity() * 1.0f / AutoSizeConfig.getInstance().getInitDensity();
+                targetScaledDensity = targetDensity * systemFontScale;
+            }
             targetDensityDpi = (int) (targetDensity * 160);
+
+            targetScreenWidthDp = (int) (AutoSizeConfig.getInstance().getScreenWidth() / targetDensity);
+            targetScreenHeightDp = (int) (AutoSizeConfig.getInstance().getScreenHeight() / targetDensity);
 
             if (isBaseOnWidth) {
                 targetXdpi = AutoSizeConfig.getInstance().getScreenWidth() * 1.0f / subunitsDesignSize;
@@ -181,20 +221,23 @@ public final class AutoSize {
                 targetXdpi = AutoSizeConfig.getInstance().getScreenHeight() * 1.0f / subunitsDesignSize;
             }
 
-            mCache.put(key, new DisplayMetricsInfo(targetDensity, targetDensityDpi, targetScaledDensity, targetXdpi));
+            mCache.put(key, new DisplayMetricsInfo(targetDensity, targetDensityDpi, targetScaledDensity, targetXdpi, targetScreenWidthDp, targetScreenHeightDp));
         } else {
             targetDensity = displayMetricsInfo.getDensity();
             targetDensityDpi = displayMetricsInfo.getDensityDpi();
             targetScaledDensity = displayMetricsInfo.getScaledDensity();
             targetXdpi = displayMetricsInfo.getXdpi();
+            targetScreenWidthDp = displayMetricsInfo.getScreenWidthDp();
+            targetScreenHeightDp = displayMetricsInfo.getScreenHeightDp();
         }
 
         setDensity(activity, targetDensity, targetDensityDpi, targetScaledDensity, targetXdpi);
+        setScreenSizeDp(activity, targetScreenWidthDp, targetScreenHeightDp);
 
-        LogUtils.d(String.format(Locale.ENGLISH, "The %s has been adapted! \n%s Info: isBaseOnWidth = %s, %s = %f, %s = %f, targetDensity = %f, targetScaledDensity = %f, targetDensityDpi = %d, targetXdpi = %f"
+        AutoSizeLog.d(String.format(Locale.ENGLISH, "The %s has been adapted! \n%s Info: isBaseOnWidth = %s, %s = %f, %s = %f, targetDensity = %f, targetScaledDensity = %f, targetDensityDpi = %d, targetXdpi = %f, targetScreenWidthDp = %d, targetScreenHeightDp = %d"
                 , activity.getClass().getName(), activity.getClass().getSimpleName(), isBaseOnWidth, isBaseOnWidth ? "designWidthInDp"
                         : "designHeightInDp", sizeInDp, isBaseOnWidth ? "designWidthInSubunits" : "designHeightInSubunits", subunitsDesignSize
-                , targetDensity, targetScaledDensity, targetDensityDpi, targetXdpi));
+                , targetDensity, targetScaledDensity, targetDensityDpi, targetXdpi, targetScreenWidthDp, targetScreenHeightDp));
     }
 
     /**
@@ -203,6 +246,7 @@ public final class AutoSize {
      * @param activity {@link Activity}
      */
     public static void cancelAdapt(Activity activity) {
+        Preconditions.checkMainThread();
         float initXdpi = AutoSizeConfig.getInstance().getInitXdpi();
         switch (AutoSizeConfig.getInstance().getUnitsManager().getSupportSubunits()) {
             case PT:
@@ -217,6 +261,9 @@ public final class AutoSize {
                 , AutoSizeConfig.getInstance().getInitDensityDpi()
                 , AutoSizeConfig.getInstance().getInitScaledDensity()
                 , initXdpi);
+        setScreenSizeDp(activity
+                , AutoSizeConfig.getInstance().getInitScreenWidthDp()
+                , AutoSizeConfig.getInstance().getInitScreenHeightDp());
     }
 
     /**
@@ -239,22 +286,20 @@ public final class AutoSize {
      * @param xdpi          {@link DisplayMetrics#xdpi}
      */
     private static void setDensity(Activity activity, float density, int densityDpi, float scaledDensity, float xdpi) {
+        DisplayMetrics activityDisplayMetrics = activity.getResources().getDisplayMetrics();
+        setDensity(activityDisplayMetrics, density, densityDpi, scaledDensity, xdpi);
+        DisplayMetrics appDisplayMetrics = AutoSizeConfig.getInstance().getApplication().getResources().getDisplayMetrics();
+        setDensity(appDisplayMetrics, density, densityDpi, scaledDensity, xdpi);
+
         //兼容 MIUI
         DisplayMetrics activityDisplayMetricsOnMIUI = getMetricsOnMiui(activity.getResources());
         DisplayMetrics appDisplayMetricsOnMIUI = getMetricsOnMiui(AutoSizeConfig.getInstance().getApplication().getResources());
 
         if (activityDisplayMetricsOnMIUI != null) {
             setDensity(activityDisplayMetricsOnMIUI, density, densityDpi, scaledDensity, xdpi);
-        } else {
-            DisplayMetrics activityDisplayMetrics = activity.getResources().getDisplayMetrics();
-            setDensity(activityDisplayMetrics, density, densityDpi, scaledDensity, xdpi);
         }
-
         if (appDisplayMetricsOnMIUI != null) {
             setDensity(appDisplayMetricsOnMIUI, density, densityDpi, scaledDensity, xdpi);
-        } else {
-            DisplayMetrics appDisplayMetrics = AutoSizeConfig.getInstance().getApplication().getResources().getDisplayMetrics();
-            setDensity(appDisplayMetrics, density, densityDpi, scaledDensity, xdpi);
         }
     }
 
@@ -289,6 +334,35 @@ public final class AutoSize {
                 break;
             default:
         }
+    }
+
+    /**
+     * 给 {@link Configuration} 赋值
+     *
+     * @param activity       {@link Activity}
+     * @param screenWidthDp  {@link Configuration#screenWidthDp}
+     * @param screenHeightDp {@link Configuration#screenHeightDp}
+     */
+    private static void setScreenSizeDp(Activity activity, int screenWidthDp, int screenHeightDp) {
+        if (AutoSizeConfig.getInstance().getUnitsManager().isSupportDP() && AutoSizeConfig.getInstance().getUnitsManager().isSupportScreenSizeDP()) {
+            Configuration activityConfiguration = activity.getResources().getConfiguration();
+            setScreenSizeDp(activityConfiguration, screenWidthDp, screenHeightDp);
+
+            Configuration appConfiguration = AutoSizeConfig.getInstance().getApplication().getResources().getConfiguration();
+            setScreenSizeDp(appConfiguration, screenWidthDp, screenHeightDp);
+        }
+    }
+
+    /**
+     * Configuration赋值
+     *
+     * @param configuration  {@link Configuration}
+     * @param screenWidthDp  {@link Configuration#screenWidthDp}
+     * @param screenHeightDp {@link Configuration#screenHeightDp}
+     */
+    private static void setScreenSizeDp(Configuration configuration, int screenWidthDp, int screenHeightDp) {
+        configuration.screenWidthDp = screenWidthDp;
+        configuration.screenHeightDp = screenHeightDp;
     }
 
     /**

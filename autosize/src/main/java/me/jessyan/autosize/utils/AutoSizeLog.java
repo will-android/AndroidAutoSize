@@ -24,11 +24,11 @@ import android.util.Log;
  * <a href="https://github.com/JessYanCoding">Follow me</a>
  * ================================================
  */
-public class LogUtils {
+public class AutoSizeLog {
     private static final String TAG = "AndroidAutoSize";
     private static boolean debug;
 
-    private LogUtils() {
+    private AutoSizeLog() {
         throw new IllegalStateException("you can't instantiate me!");
     }
 
@@ -37,7 +37,7 @@ public class LogUtils {
     }
 
     public static void setDebug(boolean debug) {
-        LogUtils.debug = debug;
+        AutoSizeLog.debug = debug;
     }
 
     public static void d(String message) {

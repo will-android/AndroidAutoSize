@@ -23,14 +23,14 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.content.res.Resources;
-import android.support.v4.app.Fragment;
 import android.util.DisplayMetrics;
 
 import java.lang.reflect.Field;
 
 import me.jessyan.autosize.external.ExternalAdaptManager;
+import me.jessyan.autosize.unit.Subunits;
 import me.jessyan.autosize.unit.UnitsManager;
-import me.jessyan.autosize.utils.LogUtils;
+import me.jessyan.autosize.utils.AutoSizeLog;
 import me.jessyan.autosize.utils.Preconditions;
 import me.jessyan.autosize.utils.ScreenUtils;
 
@@ -47,6 +47,8 @@ public final class AutoSizeConfig {
     private static volatile AutoSizeConfig sInstance;
     private static final String KEY_DESIGN_WIDTH_IN_DP = "design_width_in_dp";
     private static final String KEY_DESIGN_HEIGHT_IN_DP = "design_height_in_dp";
+    public static final boolean DEPENDENCY_ANDROIDX;
+    public static final boolean DEPENDENCY_SUPPORT;
     private Application mApplication;
     /**
      * 用来管理外部三方库 {@link Activity} 的适配
@@ -72,6 +74,14 @@ public final class AutoSizeConfig {
      * 最初的 {@link DisplayMetrics#xdpi}
      */
     private float mInitXdpi;
+    /**
+     * 最初的 {@link Configuration#screenWidthDp}
+     */
+    private int mInitScreenWidthDp;
+    /**
+     * 最初的 {@link Configuration#screenHeightDp}
+     */
+    private int mInitScreenHeightDp;
     /**
      * 设计图上的总宽度, 单位 dp
      */
@@ -120,7 +130,7 @@ public final class AutoSizeConfig {
      */
     private boolean isStop;
     /**
-     * 是否让框架支持自定义 {@link Fragment} 的适配参数, 由于这个需求是比较少见的, 所以须要使用者手动开启
+     * 是否让框架支持自定义 Fragment 的适配参数, 由于这个需求是比较少见的, 所以须要使用者手动开启
      */
     private boolean isCustomFragment;
     /**
@@ -133,6 +143,11 @@ public final class AutoSizeConfig {
      */
     private boolean isExcludeFontScale;
     /**
+     * 区别于系统字体大小的放大比例, AndroidAutoSize 允许 APP 内部可以独立于系统字体大小之外，独自拥有全局调节 APP 字体大小的能力
+     * 当然, 在 APP 内您必须使用 sp 来作为字体的单位, 否则此功能无效, 将此值设为 0 则取消此功能
+     */
+    private float privateFontScale;
+    /**
      * 是否是 Miui 系统
      */
     private boolean isMiui;
@@ -144,6 +159,22 @@ public final class AutoSizeConfig {
      * 屏幕适配监听器，用于监听屏幕适配时的一些事件
      */
     private onAdaptListener mOnAdaptListener;
+
+    static {
+        DEPENDENCY_ANDROIDX = findClassByClassName("androidx.fragment.app.FragmentActivity");
+        DEPENDENCY_SUPPORT = findClassByClassName("android.support.v4.app.FragmentActivity");
+    }
+
+    private static boolean findClassByClassName(String className) {
+        boolean hasDependency;
+        try {
+            Class.forName(className);
+            hasDependency = true;
+        } catch (ClassNotFoundException e) {
+            hasDependency = false;
+        }
+        return hasDependency;
+    }
 
     public static AutoSizeConfig getInstance() {
         if (sInstance == null) {
@@ -199,6 +230,17 @@ public final class AutoSizeConfig {
         this.mApplication = application;
         this.isBaseOnWidth = isBaseOnWidth;
         final DisplayMetrics displayMetrics = Resources.getSystem().getDisplayMetrics();
+        final Configuration configuration = Resources.getSystem().getConfiguration();
+
+        //设置一个默认值, 避免在低配设备上因为获取 MetaData 过慢, 导致适配时未能正常获取到设计图尺寸
+        //建议使用者在低配设备上主动在 Application#onCreate 中调用 setDesignWidthInDp 替代以使用 AndroidManifest 配置设计图尺寸的方式
+        if (AutoSizeConfig.getInstance().getUnitsManager().getSupportSubunits() == Subunits.NONE) {
+            mDesignWidthInDp = 360;
+            mDesignHeightInDp = 640;
+        } else {
+            mDesignWidthInDp = 1080;
+            mDesignHeightInDp = 1920;
+        }
 
         getMetaData(application);
         isVertical = application.getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT;
@@ -206,12 +248,14 @@ public final class AutoSizeConfig {
         mScreenWidth = screenSize[0];
         mScreenHeight = screenSize[1];
         mStatusBarHeight = ScreenUtils.getStatusBarHeight();
-        LogUtils.d("designWidthInDp = " + mDesignWidthInDp + ", designHeightInDp = " + mDesignHeightInDp + ", screenWidth = " + mScreenWidth + ", screenHeight = " + mScreenHeight);
+        AutoSizeLog.d("designWidthInDp = " + mDesignWidthInDp + ", designHeightInDp = " + mDesignHeightInDp + ", screenWidth = " + mScreenWidth + ", screenHeight = " + mScreenHeight);
 
         mInitDensity = displayMetrics.density;
         mInitDensityDpi = displayMetrics.densityDpi;
         mInitScaledDensity = displayMetrics.scaledDensity;
         mInitXdpi = displayMetrics.xdpi;
+        mInitScreenWidthDp = configuration.screenWidthDp;
+        mInitScreenHeightDp = configuration.screenHeightDp;
         application.registerComponentCallbacks(new ComponentCallbacks() {
             @Override
             public void onConfigurationChanged(Configuration newConfig) {
@@ -219,7 +263,7 @@ public final class AutoSizeConfig {
                     if (newConfig.fontScale > 0) {
                         mInitScaledDensity =
                                 Resources.getSystem().getDisplayMetrics().scaledDensity;
-                        LogUtils.d("initScaledDensity = " + mInitScaledDensity + " on ConfigurationChanged");
+                        AutoSizeLog.d("initScaledDensity = " + mInitScaledDensity + " on ConfigurationChanged");
                     }
                     isVertical = newConfig.orientation == Configuration.ORIENTATION_PORTRAIT;
                     int[] screenSize = ScreenUtils.getScreenSize(application);
@@ -233,8 +277,8 @@ public final class AutoSizeConfig {
 
             }
         });
-        LogUtils.d("initDensity = " + mInitDensity + ", initScaledDensity = " + mInitScaledDensity);
-        mActivityLifecycleCallbacks = new ActivityLifecycleCallbacksImpl(strategy == null ? new WrapperAutoAdaptStrategy(new DefaultAutoAdaptStrategy()) : strategy);
+        AutoSizeLog.d("initDensity = " + mInitDensity + ", initScaledDensity = " + mInitScaledDensity);
+        mActivityLifecycleCallbacks = new ActivityLifecycleCallbacksImpl(new WrapperAutoAdaptStrategy(strategy == null ? new DefaultAutoAdaptStrategy() : strategy));
         application.registerActivityLifecycleCallbacks(mActivityLifecycleCallbacks);
         if ("MiuiResources".equals(application.getResources().getClass().getSimpleName()) || "XResources".equals(application.getResources().getClass().getSimpleName())) {
             isMiui = true;
@@ -328,12 +372,12 @@ public final class AutoSizeConfig {
      * @param log {@code true} 为打印
      */
     public AutoSizeConfig setLog(boolean log) {
-        LogUtils.setDebug(log);
+        AutoSizeLog.setDebug(log);
         return this;
     }
 
     /**
-     * 是否让框架支持自定义 {@link Fragment} 的适配参数, 由于这个需求是比较少见的, 所以须要使用者手动开启
+     * 是否让框架支持自定义 Fragment 的适配参数, 由于这个需求是比较少见的, 所以须要使用者手动开启
      *
      * @param customFragment {@code true} 为支持
      */
@@ -343,7 +387,7 @@ public final class AutoSizeConfig {
     }
 
     /**
-     * 框架是否已经开启支持自定义 {@link Fragment} 的适配参数
+     * 框架是否已经开启支持自定义 Fragment 的适配参数
      *
      * @return {@code true} 为支持
      */
@@ -480,6 +524,24 @@ public final class AutoSizeConfig {
     }
 
     /**
+     * 获取 {@link #mInitScreenWidthDp}
+     *
+     * @return {@link #mInitScreenWidthDp}
+     */
+    public int getInitScreenWidthDp() {
+        return mInitScreenWidthDp;
+    }
+
+    /**
+     * 获取 {@link #mInitScreenHeightDp}
+     *
+     * @return {@link #mInitScreenHeightDp}
+     */
+    public int getInitScreenHeightDp() {
+        return mInitScreenHeightDp;
+    }
+
+    /**
      * 获取屏幕方向
      *
      * @return {@code true} 为纵向, {@code false} 为横向
@@ -535,6 +597,27 @@ public final class AutoSizeConfig {
     public AutoSizeConfig setExcludeFontScale(boolean excludeFontScale) {
         isExcludeFontScale = excludeFontScale;
         return this;
+    }
+
+    /**
+     * 区别于系统字体大小的放大比例, AndroidAutoSize 允许 APP 内部可以独立于系统字体大小之外，独自拥有全局调节 APP 字体大小的能力
+     * 当然, 在 APP 内您必须使用 sp 来作为字体的单位, 否则此功能无效
+     *
+     * @param fontScale 字体大小放大的比例, 设为 0 则取消此功能
+     */
+    public AutoSizeConfig setPrivateFontScale(float fontScale) {
+        privateFontScale = fontScale;
+        return this;
+    }
+
+    /**
+     * 区别于系统字体大小的放大比例, AndroidAutoSize 允许 APP 内部可以独立于系统字体大小之外，独自拥有全局调节 APP 字体大小的能力
+     * 当然, 在 APP 内您必须使用 sp 来作为字体的单位, 否则此功能无效
+     *
+     * @return 私有的字体大小放大比例
+     */
+    public float getPrivateFontScale() {
+        return privateFontScale;
     }
 
     /**
